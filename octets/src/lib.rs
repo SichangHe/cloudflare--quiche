@@ -518,10 +518,23 @@ impl<'a> OctetsMut<'a> {
 
     /// Writes an unsigned variable-length integer of the specified length, in
     /// network byte-order at the current offset and advances the buffer.
+    /// Returns an error if the selected length cannot represent the value.
     pub fn put_varint_with_len(
         &mut self, v: u64, len: usize,
     ) -> Result<&mut [u8]> {
         if self.cap() < len {
+            return Err(BufferTooShortError);
+        }
+
+        let max = match len {
+            1 => 63,
+            2 => 16_383,
+            4 => 1_073_741_823,
+            8 => MAX_VAR_INT,
+            _ => panic!("value is too large for varint"),
+        };
+
+        if v > max {
             return Err(BufferTooShortError);
         }
 
@@ -546,7 +559,7 @@ impl<'a> OctetsMut<'a> {
                 buf
             },
 
-            _ => panic!("value is too large for varint"),
+            _ => unreachable!(),
         };
 
         Ok(buf)
@@ -1252,6 +1265,41 @@ mod tests {
         }
         let exp = [0; 3];
         assert_eq!(&d, &exp);
+    }
+
+    #[test]
+    fn put_varint_with_len_boundaries() {
+        let valid = [(63, 1), (16_383, 2), (1_073_741_823, 4), (MAX_VAR_INT, 8)];
+
+        for (value, len) in valid {
+            let mut d = [0; 8];
+            {
+                let mut b = OctetsMut::with_slice(&mut d[..len]);
+                assert!(b.put_varint_with_len(value, len).is_ok());
+                assert_eq!(b.off(), len);
+            }
+
+            let mut b = Octets::with_slice(&d[..len]);
+            assert_eq!(b.get_varint().unwrap(), value);
+            assert_eq!(b.off(), len);
+        }
+
+        let invalid = [
+            (64, 1),
+            (16_384, 2),
+            (1_073_741_824, 4),
+            (MAX_VAR_INT + 1, 8),
+        ];
+
+        for (value, len) in invalid {
+            let mut d = [0xa5; 8];
+            {
+                let mut b = OctetsMut::with_slice(&mut d[..len]);
+                assert!(b.put_varint_with_len(value, len).is_err());
+                assert_eq!(b.off(), 0);
+            }
+            assert_eq!(d, [0xa5; 8]);
+        }
     }
 
     #[test]
